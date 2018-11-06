@@ -1,7 +1,6 @@
-#include <Servo.h>
-#include <Wire.h>
+#include <Servo.h>;
 #include "U8glib.h"
-
+#include "Wire.h"
 #define DS3231_I2C_ADDRESS 0x68
 
 Servo gripServo;
@@ -14,9 +13,23 @@ int pulsePin = A1;
 boolean center = true;
 int normalVal;
 
+
+const int buttonPin = 12; 
+int ledState = HIGH;         // the current state of the output pin
+int buttonState;             // the current reading from the input pin
+int lastButtonState = LOW;   // the previous reading from the input pin
+int reading;
+// the following variables are unsigned longs because the time, measured in
+// milliseconds, will quickly become a bigger number than can be stored in an int.
+unsigned long lastDebounceTime = 0;  // the last time the output pin was toggled
+unsigned long debounceDelay = 50;    // the debounce time; increase if the output flickers
+//int blinkPin = LED_BUILTIN;
+
+
 int bpm, sig, ibi=600, pulse=false, qs=false;
 
-static boolean debug = true;
+static bool debug = true;
+bool manualState = false;
 
 int bpmCache = 0;
 int rate[10];
@@ -26,55 +39,93 @@ boolean firstBeat = true, secondBeat = false;
 bool drawBig = true;
 bool flexAct = false;
 
-byte decToBcd(byte val)
-{
-  return ( (val / 10 * 16) + (val % 10) );
+
+//-----------------------------------------------------------
+void setup() {
+  // put your setup code here, to run once:
+  Wire.begin();
+  Serial.begin(9600);
+  pinMode(A0,INPUT);
+  pinMode(A1, INPUT);
+  gripServo.attach(9);
+
+  normalVal = analogRead(A0);
+  Serial.println(normalVal);
+  
+
+  u8g.setRot180();
+  u8g.setColorIndex(1); // pixel on
+  u8g.setFont(u8g_font_unifont);
+  interruptSetup();
+  startupPage();
+
+//  newBPM = String(random(80,90)).c_str();
+  
+}
+const int beatThresh = 5;
+int count = beatThresh - 1;
+void loop() {
+  // put your main code here, to run repeatedly:
+  if (qs) {
+    serialOutputOnBeat();
+    qs = false;
+  }
+  count++;
+  if (count == beatThresh) {
+    drawBig = !drawBig;
+    count = 0;
+  }
+  delay(20);
+
+
+switchState();
+//automatic();
+//manual();
+display();
+//  Serial.print("Normal: ");
+//  Serial.print(normalVal);
+//  Serial.print("   ");
+//  Serial.print("Flex: ");
+//  Serial.println(flexVal);
 }
 
-// Convert binary coded decimal to normal decimal numbers
-byte bcdToDec(byte val)
-{
-  return ( (val / 16 * 10) + (val % 16) );
-}
-
-void readDS3231time(byte *second,
-                    byte *minute,
-                    byte *hour,
-                    byte *dayOfWeek,
-                    byte *dayOfMonth,
-                    byte *month,
-                    byte *year)
-{
-  Wire.beginTransmission(DS3231_I2C_ADDRESS);
-  Wire.write(0); // set DS3231 register pointer to 00h
-  Wire.endTransmission();
-  Wire.requestFrom(DS3231_I2C_ADDRESS, 7);
-  // request seven bytes of data from DS3231 starting from register 00h
-  *second = bcdToDec(Wire.read() & 0x7f);
-  *minute = bcdToDec(Wire.read());
-  *hour = bcdToDec(Wire.read() & 0x3f);
-  *dayOfWeek = bcdToDec(Wire.read());
-  *dayOfMonth = bcdToDec(Wire.read());
-  *month = bcdToDec(Wire.read());
-  *year = bcdToDec(Wire.read());
-}
 
 
+
+//------------------------------------------------------------
 void automatic()
 {
   gripServo.write(0);
-  delay(1500);
+  delay(500);
   gripServo.write(180);
-  delay(1500);
+  delay(500);
 }
+
+unsigned long timeCache = 0;
+int normMean = 0;
+int normCount = 0;
 
 void manual()
 {
   
-
+    unsigned long newTime = millis();
+    Serial.println(newTime - timeCache);
+    if (newTime - timeCache < 500) {
+      return;
+    }
+    timeCache = newTime;
     flexVal = analogRead(A0);
-  Serial.println(flexVal);
-    if(flexVal < normalVal-60)
+    if (normCount < 5) {
+      normMean += flexVal;
+      normCount++;
+    } else if (normCount == 5) {
+      normMean /= 5;
+      normalVal = normMean;
+      normCount++;
+    }
+//  Serial.println(flexVal);
+
+    if(flexVal < normalVal-50)
   {
     flexAct = false;
     gripServo.write(0);
@@ -137,12 +188,18 @@ void draw()
          bpmCache = bpm;
       }
     }
+    u8g.setFont(u8g_font_helvR08);
+    u8g.drawStr(0, 10, "GripAid");
+
+    u8g.setFont(u8g_font_courR12);
     if (bpmCache == 0) {
-      u8g.drawStr(0, 20, String("---").c_str());
+      u8g.drawStr(0, 30, "---");
     } else {
-      u8g.drawStr(0, 20, String(bpmCache).c_str());
+      u8g.drawStr(0, 30, String(bpmCache).c_str());
     }
-    u8g.drawStr(0, 70, "BPM");
+
+    u8g.setFont(u8g_font_helvR08);
+    u8g.drawStr(0, 50, "BPM");
 
     if (drawBig) {
     u8g.drawDisc(53, 20, 8);
@@ -161,45 +218,39 @@ void draw()
   } else {
     u8g.drawBox(53, 50, 16, 5);
   }
-
   byte second, minute, hour, dayOfWeek, dayOfMonth, month, year;
   readDS3231time(&second, &minute, &hour, &dayOfWeek, &dayOfMonth, &month,
                  &year);
-  
+  char* day = getDay(dayOfWeek);
 
-  u8g.drawStr(100, 35, "");
-    
-//    u8g.drawStr(0, 20, String(newBPM).c_str() );
+  String sday = pad(dayOfMonth);
+  String smonth = pad(month);
+  String syear = pad(year);
 
-// heart
-   
+  String shour = pad(hour);
+  String smin = pad(minute);
 
-//    u8g.drawBox(50, 30, 10, 10);
+  String dateStr = String(smonth + "/" + sday + "/" + syear);
+  String timeStr = String(shour + ":" + smin);
 
-//    beatGraph
-//  beatCount++;
-//  if (beatCount == 4) {
-//    beatCount = 0;
-//    int val = 0;
-//    if (qs) {
-//       val = constrain(bpm, 0, 150);
-//       val = map(val, 0, 150, 0, 15);
-//    } else if (beats[14] > 0) {
-//      val = -beats[14];
-//    }
-//    for (int i = 1; i < 15; i++) {
-//      beats[i-1] = beats[i];
-//    }
-//    beats[14] = val;
-//  }
-//  for (int i = 1; i < 15; i++) {
-//    int x1 = 50 + 4 * (i-1);
-//    int y1 = 30 + beats[i-1];
-//    int x2 = 50 + 4 * i;
-//    int y2 = 30 + beats[i];
-//    u8g.drawLine(x1,y1, x2,y2);
-//  }
+  u8g.setFont(u8g_font_helvR08);
+  u8g.drawStr(87, 10, day);
+  u8g.drawStr(87, 30, dateStr.c_str());
+  u8g.drawStr(87, 50, timeStr.c_str());
 
+}
+
+String pad(byte val) {
+  String num = String(val);
+  if (val < 10) {
+    num = "0" + num;
+  }
+  return num;
+}
+
+char* getDay(int i) {
+  char* days[] = {"","Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+  return days[i];
 }
 
 void interruptSetup() {
@@ -307,45 +358,84 @@ ISR(TIMER2_COMPA_vect) //triggered when Timer2 counts to 124
   sei();                                   // enable interrupts when youre done!
 }
 
+void switchState()
+{
+  reading = digitalRead(buttonPin);
 
+  // check to see if you just pressed the button
+  // (i.e. the input went from LOW to HIGH), and you've waited long enough
+  // since the last press to ignore any noise:
 
-void setup() {
-  // put your setup code here, to run once:
-  Wire.begin();
-  Serial.begin(9600);
-  pinMode(A0,INPUT);
-  pinMode(A1, INPUT);
-  gripServo.attach(9);
+  // If the switch changed, due to noise or pressing:
+  if (reading != lastButtonState) {
+    // reset the debouncing timer
+    lastDebounceTime = millis();
+  }
 
-  normalVal = analogRead(A0);
-  
+  if ((millis() - lastDebounceTime) > debounceDelay) {
+    // whatever the reading is at, it's been there for longer than the debounce
+    // delay, so take it as the actual current state:
 
-  u8g.setRot180();
-  u8g.setColorIndex(1); // pixel on
-  u8g.setFont(u8g_font_unifont);
-  interruptSetup();
-  startupPage();
+    // if the button state has changed:
+    if (reading != buttonState) {
+      buttonState = reading;
 
-//  newBPM = String(random(80,90)).c_str();
-  
+      // only toggle the LED if the new button state is HIGH
+      if (buttonState == HIGH) {
+        ledState = !ledState;
+      }
+    }
+  }
+
+//  Serial.println(ledState);
+
+  if (ledState == HIGH)
+  {
+    manual();
+    manualState = true;
+    //Serial.println("MANUAL");
+  }
+  else
+  {
+    automatic();
+    manualState = false;
+    //Serial.println("AUTOMATIC");
+  }
+
+  // save the reading. Next time through the loop, it'll be the lastButtonState:
+  lastButtonState = reading;
 }
-const int beatThresh = 5;
-int count = beatThresh - 1;
-void loop() {
-  // put your main code here, to run repeatedly:
-  if (qs) {
-    serialOutputOnBeat();
-    qs = false;
-  }
-  count++;
-  if (count == beatThresh) {
-    drawBig = !drawBig;
-    count = 0;
-  }
-  delay(20);
 
-//automatic();
-manual();
-display();
-//  Serial.println(flexVal);
+// Convert normal decimal numbers to binary coded decimal
+byte decToBcd(byte val)
+{
+  return ( (val / 10 * 16) + (val % 10) );
+}
+
+// Convert binary coded decimal to normal decimal numbers
+byte bcdToDec(byte val)
+{
+  return ( (val / 16 * 10) + (val % 16) );
+}
+
+void readDS3231time(byte *second,
+                    byte *minute,
+                    byte *hour,
+                    byte *dayOfWeek,
+                    byte *dayOfMonth,
+                    byte *month,
+                    byte *year)
+{
+  Wire.beginTransmission(DS3231_I2C_ADDRESS);
+  Wire.write(0); // set DS3231 register pointer to 00h
+  Wire.endTransmission();
+  Wire.requestFrom(DS3231_I2C_ADDRESS, 7);
+  // request seven bytes of data from DS3231 starting from register 00h
+  *second = bcdToDec(Wire.read() & 0x7f);
+  *minute = bcdToDec(Wire.read());
+  *hour = bcdToDec(Wire.read() & 0x3f);
+  *dayOfWeek = bcdToDec(Wire.read());
+  *dayOfMonth = bcdToDec(Wire.read());
+  *month = bcdToDec(Wire.read());
+  *year = bcdToDec(Wire.read());
 }
