@@ -1,0 +1,1 @@
+pip install numpy opencv-python tensorflow h5py keras pillow pyautogui
